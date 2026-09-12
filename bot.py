@@ -180,8 +180,8 @@ async def creategame(ctx, *, arg: str):
   lower_arg = arg.lower()
   if " vs " not in lower_arg:
     await ctx.send(
-        "❌ Please use 'vs' between teams. Example: `!creategame Ohio State 100"
-        " vs Texas -118`",
+        "❌ Please use 'vs' between teams. Example: `!creategame Michigan +110"
+        " vs Oklahoma -130`",
         delete_after=10,
     )
     return
@@ -192,7 +192,7 @@ async def creategame(ctx, *, arg: str):
 
   s1_words = side1.split()
   try:
-    odds1 = int(s1_words[-1])
+    odds1 = int(s1_words[-1].replace("+", ""))
     team1 = " ".join(s1_words[:-1])
   except ValueError:
     await ctx.send("❌ Error parsing Team 1 odds.", delete_after=10)
@@ -200,7 +200,7 @@ async def creategame(ctx, *, arg: str):
 
   s2_words = side2.split()
   try:
-    odds2 = int(s2_words[-1])
+    odds2 = int(s2_words[-1].replace("+", ""))
     team2 = " ".join(s2_words[:-1])
   except ValueError:
     await ctx.send("❌ Error parsing Team 2 odds.", delete_after=10)
@@ -276,7 +276,6 @@ async def bet(ctx, game_id: int, team_name: str, amount: float):
     )
     return
 
-  # Check if game is open
   cursor.execute(
       "SELECT team1, team2, odds_team1, odds_team2, status FROM games WHERE id"
       " = ?",
@@ -285,12 +284,13 @@ async def bet(ctx, game_id: int, team_name: str, amount: float):
   game = cursor.fetchone()
 
   if not game or game[4] != "open":
-    await ctx.send("❌ That game is not open for betting.", delete_after=10)
+    await ctx.send(
+        f"❌ Game #{game_id} is not open for betting.", delete_after=10
+    )
     return
 
   t1, t2, o1, o2, _ = game
 
-  # Match team name loosely
   chosen_team = None
   odds = 0
   if team_name.lower() in t1.lower():
@@ -305,7 +305,6 @@ async def bet(ctx, game_id: int, team_name: str, amount: float):
     )
     return
 
-  # Deduct balance and record bet
   new_bal = bal - amount
   cursor.execute(
       "UPDATE users SET balance = ? WHERE user_id = ?", (new_bal, uid)
@@ -324,7 +323,42 @@ async def bet(ctx, game_id: int, team_name: str, amount: float):
   )
 
 
-# --- RESOLVE GAME (Admin Only) ---
+# --- CLOSE GAME (Admin Only - Stops Betting) ---
+@bot.command(name="closegame")
+@commands.has_permissions(administrator=True)
+async def closegame(ctx, game_id: int):
+  try:
+    await ctx.message.delete()
+  except discord.Forbidden:
+    pass
+
+  cursor.execute(
+      "SELECT team1, team2, status FROM games WHERE id = ?", (game_id,)
+  )
+  game = cursor.fetchone()
+
+  if not game:
+    await ctx.send(f"❌ Game #{game_id} not found.", delete_after=10)
+    return
+
+  if game[2] != "open":
+    await ctx.send(
+        f"❌ Game #{game_id} is already closed or resolved.", delete_after=10
+    )
+    return
+
+  cursor.execute(
+      "UPDATE games SET status = 'closed' WHERE id = ?", (game_id,)
+  )
+  db.commit()
+
+  await ctx.send(
+      f"🔒 **Game #{game_id} ({game[0]} vs {game[1]}) is now closed!** No more"
+      " bets can be placed."
+  )
+
+
+# --- RESOLVE GAME (Admin Only - Pays Out Winners) ---
 @bot.command(name="resolve")
 @commands.has_permissions(administrator=True)
 async def resolve(ctx, game_id: int, *, winning_team: str):
@@ -342,13 +376,11 @@ async def resolve(ctx, game_id: int, *, winning_team: str):
     await ctx.send(f"❌ Game #{game_id} not found.", delete_after=10)
     return
 
-  if game[2] != "open":
-    await ctx.send(
-        f"❌ Game #{game_id} is already resolved or closed.", delete_after=10
-    )
+  t1, t2, status = game
+  if status == "resolved":
+    await ctx.send(f"❌ Game #{game_id} has already been resolved.", delete_after=10)
     return
 
-  t1, t2, _ = game
   winner = None
   if winning_team.lower() in t1.lower():
     winner = t1
@@ -362,20 +394,17 @@ async def resolve(ctx, game_id: int, *, winning_team: str):
     )
     return
 
-  # Mark game as closed
+  # Mark game as resolved
   cursor.execute(
-      "UPDATE games SET status = 'closed' WHERE id = ?", (game_id,)
+      "UPDATE games SET status = 'resolved' WHERE id = ?", (game_id,)
   )
 
-  # Fetch all pending bets for this game
   cursor.execute(
       "SELECT id, user_id, team_picked, amount, odds FROM bets WHERE game_id ="
       " ? AND status = 'pending'",
       (game_id,),
   )
   pending_bets = cursor.fetchall()
-
-  payout_summary = f"🏁 **Game #{game_id} Resolved! Winner: {winner}**\n"
 
   for bet_id, uid, picked, amount, odds in pending_bets:
     cursor.execute(
@@ -387,7 +416,6 @@ async def resolve(ctx, game_id: int, *, winning_team: str):
     user_bal = user_row[0]
 
     if picked.lower() == winner.lower():
-      # Calculate American Odds payout
       if odds > 0:
         profit = amount * (odds / 100.0)
       else:
