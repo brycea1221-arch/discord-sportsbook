@@ -50,6 +50,11 @@ async def on_ready():
 # --- PING COMMAND ---
 @bot.command(name="ping")
 async def ping(ctx):
+  try:
+    await ctx.message.delete()
+  except discord.Forbidden:
+    pass
+
   await ctx.send(f"Pong! 🏓 Bot latency: {round(bot.latency * 1000)}ms")
 
 
@@ -112,6 +117,11 @@ async def creategame(ctx, *, arg: str):
 # --- GAMES COMMAND ---
 @bot.command(name="games")
 async def games(ctx):
+  try:
+    await ctx.message.delete()
+  except discord.Forbidden:
+    pass
+
   cursor.execute(
       "SELECT id, team1, team2, odds_team1, odds_team2 FROM games WHERE"
       " status='open'"
